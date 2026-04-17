@@ -10,18 +10,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-/* --------------------------------------------------
+/* ==================================================
    CONFIG
--------------------------------------------------- */
+================================================== */
 const PORT = process.env.PORT || 10000;
 const SECRET = process.env.JWT_SECRET || "nestflow_secret";
 
-/* --------------------------------------------------
+/* ==================================================
    DATABASE
-   Öncelik:
-   1) DATABASE_URL (Render / Cloud)
-   2) Tek tek DB_HOST / DB_PORT ...
--------------------------------------------------- */
+================================================== */
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
@@ -36,12 +33,12 @@ const pool = process.env.DATABASE_URL
     });
 
 pool.on("error", (err) => {
-  console.error("PG Pool Error:", err.message);
+  console.error("PG POOL ERROR:", err.message);
 });
 
-/* --------------------------------------------------
+/* ==================================================
    JWT
--------------------------------------------------- */
+================================================== */
 function token(user) {
   return jwt.sign(user, SECRET, { expiresIn: "12h" });
 }
@@ -53,7 +50,7 @@ function auth(req, res, next) {
     if (!h) {
       return res.status(401).json({
         success: false,
-        message: "Token yok"
+        message: "Token gerekli"
       });
     }
 
@@ -67,49 +64,107 @@ function auth(req, res, next) {
   }
 }
 
-/* --------------------------------------------------
-   INIT
--------------------------------------------------- */
+/* ==================================================
+   AUTO INIT
+================================================== */
 async function init() {
   try {
     await pool.query(`SELECT NOW()`);
 
+    /* USERS */
     await pool.query(`
-      ALTER TABLE users
-      ADD COLUMN IF NOT EXISTS last_login TIMESTAMP;
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(50) UNIQUE,
+        password_hash VARCHAR(100),
+        fullname VARCHAR(100),
+        role VARCHAR(30),
+        last_login TIMESTAMP
+      );
+    `);
+
+    /* MACHINES */
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS machines (
+        id SERIAL PRIMARY KEY,
+        machine_code VARCHAR(50),
+        machine_name VARCHAR(100),
+        oee NUMERIC DEFAULT 85
+      );
+    `);
+
+    /* WORK ORDERS */
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS work_orders (
+        id SERIAL PRIMARY KEY,
+        wo_no VARCHAR(50),
+        customer_name VARCHAR(100),
+        product_name VARCHAR(100),
+        material VARCHAR(50),
+        thickness NUMERIC,
+        qty NUMERIC,
+        produced_qty NUMERIC DEFAULT 0,
+        priority VARCHAR(20),
+        status VARCHAR(30),
+        machine_id INTEGER,
+        operator_id INTEGER,
+        due_date DATE,
+        start_time TIMESTAMP,
+        end_time TIMESTAMP
+      );
+    `);
+
+    /* PRODUCTION LOGS */
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS production_logs (
+        id SERIAL PRIMARY KEY,
+        operator_id INTEGER,
+        work_order_id INTEGER,
+        qty NUMERIC,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    /* DEFAULT USERS */
+    await pool.query(`
+      INSERT INTO users
+      (username,password_hash,fullname,role)
+      VALUES
+      ('admin','1234','System Admin','admin')
+      ON CONFLICT (username) DO NOTHING;
     `);
 
     await pool.query(`
-      ALTER TABLE work_orders
-      ADD COLUMN IF NOT EXISTS operator_id INTEGER;
+      INSERT INTO users
+      (username,password_hash,fullname,role)
+      VALUES
+      ('demo','demo123','Demo User','demo')
+      ON CONFLICT (username) DO NOTHING;
     `);
 
+    /* DEFAULT MACHINES */
     await pool.query(`
-      ALTER TABLE work_orders
-      ADD COLUMN IF NOT EXISTS start_time TIMESTAMP;
-    `);
-
-    await pool.query(`
-      ALTER TABLE work_orders
-      ADD COLUMN IF NOT EXISTS end_time TIMESTAMP;
-    `);
-
-    await pool.query(`
-      ALTER TABLE work_orders
-      ADD COLUMN IF NOT EXISTS produced_qty NUMERIC DEFAULT 0;
+      INSERT INTO machines (machine_code,machine_name,oee)
+      VALUES
+      ('LASER-01','Fiber Lazer',88),
+      ('ABKANT-01','Abkant Pres',84),
+      ('KAYNAK-01','Kaynak Hattı',81),
+      ('MONTAJ-01','Montaj Hattı',79)
+      ON CONFLICT DO NOTHING;
     `);
 
     console.log("PostgreSQL connected");
-    console.log("Schema hazır");
+    console.log("Auto schema ready");
+
   } catch (err) {
     console.error("INIT ERROR:", err.message);
     process.exit(1);
   }
 }
 
-/* --------------------------------------------------
-   HEALTHCHECK
--------------------------------------------------- */
+/* ==================================================
+   ROOT
+================================================== */
 app.get("/", (req, res) => {
   res.json({
     success: true,
@@ -121,15 +176,21 @@ app.get("/", (req, res) => {
 app.get("/healthz", async (req, res) => {
   try {
     await pool.query(`SELECT 1`);
-    res.json({ success: true, db: "ok" });
+    res.json({
+      success: true,
+      db: "ok"
+    });
   } catch {
-    res.status(500).json({ success: false, db: "error" });
+    res.status(500).json({
+      success: false,
+      db: "error"
+    });
   }
 });
 
-/* --------------------------------------------------
+/* ==================================================
    LOGIN
--------------------------------------------------- */
+================================================== */
 app.post("/api/login", async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -163,17 +224,18 @@ app.post("/api/login", async (req, res) => {
       }),
       user: u
     });
+
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: err.message
     });
   }
 });
 
-/* --------------------------------------------------
-   WORKORDER LIST
--------------------------------------------------- */
+/* ==================================================
+   WORK ORDERS LIST
+================================================== */
 app.get("/api/workorders", auth, async (req, res) => {
   try {
     const q = await pool.query(`
@@ -202,6 +264,7 @@ app.get("/api/workorders", auth, async (req, res) => {
       success: true,
       data: q.rows
     });
+
   } catch (err) {
     res.status(500).json({
       success: false,
@@ -210,9 +273,9 @@ app.get("/api/workorders", auth, async (req, res) => {
   }
 });
 
-/* --------------------------------------------------
-   CREATE WORKORDER
--------------------------------------------------- */
+/* ==================================================
+   CREATE WORK ORDER
+================================================== */
 app.post("/api/workorders", auth, async (req, res) => {
   try {
     const d = req.body;
@@ -246,6 +309,7 @@ app.post("/api/workorders", auth, async (req, res) => {
     ]);
 
     res.json({ success: true });
+
   } catch (err) {
     res.status(500).json({
       success: false,
@@ -254,32 +318,33 @@ app.post("/api/workorders", auth, async (req, res) => {
   }
 });
 
-/* --------------------------------------------------
-   UPDATE WORKORDER
--------------------------------------------------- */
+/* ==================================================
+   UPDATE WORK ORDER
+================================================== */
 app.put("/api/workorders/:id", auth, async (req, res) => {
   try {
     const id = req.params.id;
     const d = req.body;
 
-    /* adet ekleme */
+    /* üretim adedi ekle */
     if (d.add_qty) {
+
       await pool.query(`
         UPDATE work_orders
         SET produced_qty = COALESCE(produced_qty,0) + $1
-        WHERE id = $2
+        WHERE id=$2
       `, [d.add_qty, id]);
 
       await pool.query(`
         INSERT INTO production_logs
-        (operator_id, work_order_id, qty)
-        VALUES ($1,$2,$3)
+        (operator_id,work_order_id,qty)
+        VALUES($1,$2,$3)
       `, [req.user.id, id, d.add_qty]);
 
       return res.json({ success: true });
     }
 
-    /* status update */
+    /* durum değiştir */
     await pool.query(`
       UPDATE work_orders
       SET
@@ -287,12 +352,14 @@ app.put("/api/workorders/:id", auth, async (req, res) => {
         operator_id = COALESCE($2,operator_id),
         start_time =
           CASE
-            WHEN $1='Üretimde' AND start_time IS NULL THEN NOW()
+            WHEN $1='Üretimde' AND start_time IS NULL
+            THEN NOW()
             ELSE start_time
           END,
         end_time =
           CASE
-            WHEN $1='Tamamlandı' THEN NOW()
+            WHEN $1='Tamamlandı'
+            THEN NOW()
             ELSE end_time
           END
       WHERE id=$3
@@ -303,6 +370,7 @@ app.put("/api/workorders/:id", auth, async (req, res) => {
     ]);
 
     res.json({ success: true });
+
   } catch (err) {
     res.status(500).json({
       success: false,
@@ -311,9 +379,9 @@ app.put("/api/workorders/:id", auth, async (req, res) => {
   }
 });
 
-/* --------------------------------------------------
-   DELETE
--------------------------------------------------- */
+/* ==================================================
+   DELETE WORK ORDER
+================================================== */
 app.delete("/api/workorders/:id", auth, async (req, res) => {
   try {
     await pool.query(
@@ -322,6 +390,7 @@ app.delete("/api/workorders/:id", auth, async (req, res) => {
     );
 
     res.json({ success: true });
+
   } catch (err) {
     res.status(500).json({
       success: false,
@@ -330,21 +399,21 @@ app.delete("/api/workorders/:id", auth, async (req, res) => {
   }
 });
 
-/* --------------------------------------------------
-   DASHBOARD
--------------------------------------------------- */
+/* ==================================================
+   DASHBOARD SUMMARY
+================================================== */
 app.get("/api/dashboard/summary", auth, async (req, res) => {
   try {
     const q = await pool.query(`
       SELECT
-        COUNT(*) FILTER (WHERE status <> 'Tamamlandı') AS active,
-        COUNT(*) FILTER (WHERE status = 'Tamamlandı') AS done,
-        COALESCE(SUM(produced_qty),0) AS qty
+        COUNT(*) FILTER (WHERE status <> 'Tamamlandı') active,
+        COUNT(*) FILTER (WHERE status = 'Tamamlandı') done,
+        COALESCE(SUM(produced_qty),0) qty
       FROM work_orders
     `);
 
     const o = await pool.query(`
-      SELECT COALESCE(ROUND(AVG(oee)),0) AS avg
+      SELECT COALESCE(ROUND(AVG(oee)),0) avg
       FROM machines
     `);
 
@@ -358,6 +427,7 @@ app.get("/api/dashboard/summary", auth, async (req, res) => {
         delayed_orders: 0
       }
     });
+
   } catch (err) {
     res.status(500).json({
       success: false,
@@ -366,9 +436,9 @@ app.get("/api/dashboard/summary", auth, async (req, res) => {
   }
 });
 
-/* --------------------------------------------------
+/* ==================================================
    START
--------------------------------------------------- */
+================================================== */
 app.listen(PORT, async () => {
   console.log("RUNNING " + PORT);
   await init();
